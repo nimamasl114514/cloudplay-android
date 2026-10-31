@@ -19,7 +19,7 @@ class Cloud189Adapter(credential: Map<String, String> = emptyMap()) : CloudDiskA
     override val rootId = "-11"
 
     private val cookie = credential["cookie"].orEmpty()
-    private val ua = credential["ua"].ifBlank { DEFAULT_UA }
+    private val ua = credential["ua"].orEmpty().ifBlank { DEFAULT_UA }
 
     override fun needCredential(): List<String> =
         if (cookie.isBlank()) listOf("cookie") else emptyList()

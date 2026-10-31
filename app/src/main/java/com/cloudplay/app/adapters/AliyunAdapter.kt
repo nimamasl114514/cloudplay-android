@@ -11,8 +11,8 @@ import org.json.JSONObject
  * 阿里云盘适配器 —— Python 版 AliyunDriveAdapter 的 Kotlin 移植。
  *
  * 两种模式：
- *  - personal（网页 token）：/v2/*，必须带 origin/Referer/X-Canary；Authorization 用 `Bearer\t`（tab）
- *  - openapi（开放平台）：/adrive/v1.0/*，标准 Bearer
+ *  - personal（网页 token）：/v2/ 系列，必须带 origin/Referer/X-Canary；Authorization 用 `Bearer\t`（tab）
+ *  - openapi（开放平台）：/adrive/v1.0/ 系列，标准 Bearer
  * 直链带 `x-oss-additional-headers=referer`，Referer 必须逐字 `https://www.aliyundrive.com/`，否则 403。
  */
 class AliyunAdapter(credential: Map<String, String> = emptyMap()) : CloudDiskAdapter(credential) {
