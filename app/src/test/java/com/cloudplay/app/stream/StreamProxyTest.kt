@@ -1,39 +1,44 @@
 package com.cloudplay.app.stream
 
-import com.sun.net.httpserver.HttpExchange
-import com.sun.net.httpserver.HttpServer
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.mockwebserver.Dispatcher
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.RecordedRequest
+import okio.Buffer
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
-import java.net.InetSocketAddress
 
 class StreamProxyTest {
 
-    private lateinit var upstream: HttpServer
+    private lateinit var upstream: MockWebServer
     private lateinit var proxy: StreamProxy
     private val client = OkHttpClient()
-
     private val data = ByteArray(4096) { (it % 251).toByte() }
+
+    private val playlist =
+        "#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:1.0,\nseg0.ts\n#EXTINF:1.0,\nseg1.ts\n#EXT-X-ENDLIST\n"
 
     @Before
     fun setUp() {
-        upstream = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
-
-        upstream.createContext("/file.bin") { ex -> serveRange(ex, data, "application/octet-stream") }
-
-        val playlist = "#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:1.0,\nseg0.ts\n#EXTINF:1.0,\nseg1.ts\n#EXT-X-ENDLIST\n"
-        upstream.createContext("/play.m3u8") { ex ->
-            val b = playlist.toByteArray()
-            ex.responseHeaders.add("Content-Type", "application/vnd.apple.mpegurl")
-            ex.sendResponseHeaders(200, b.size.toLong())
-            ex.responseBody.use { it.write(b) }
+        upstream = MockWebServer()
+        upstream.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = (request.path ?: "").substringBefore('?')
+                return when (path) {
+                    "/file.bin" -> serveRange(request, data, "application/octet-stream")
+                    "/seg0.ts" -> serveRange(request, data, "video/mp2t")
+                    "/play.m3u8" -> MockResponse()
+                        .setHeader("Content-Type", "application/vnd.apple.mpegurl")
+                        .setBody(playlist)
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
         }
-        upstream.createContext("/seg0.ts") { ex -> serveRange(ex, data, "video/mp2t") }
-
         upstream.start()
         proxy = StreamProxy()
         proxy.start()
@@ -42,36 +47,34 @@ class StreamProxyTest {
     @After
     fun tearDown() {
         proxy.stop()
-        upstream.stop(0)
+        upstream.shutdown()
     }
 
-    private fun serveRange(ex: HttpExchange, payload: ByteArray, ct: String) {
-        val range = ex.requestHeaders.getFirst("Range")
+    private fun serveRange(req: RecordedRequest, payload: ByteArray, ct: String): MockResponse {
+        val range = req.getHeader("Range")
         if (range != null && range.startsWith("bytes=")) {
             val spec = range.removePrefix("bytes=").split("-")
             val start = spec[0].toIntOrNull() ?: 0
             val end = if (spec.size > 1 && spec[1].isNotEmpty()) spec[1].toInt() else payload.size - 1
-            val len = end - start + 1
-            ex.responseHeaders.add("Content-Type", ct)
-            ex.responseHeaders.add("Accept-Ranges", "bytes")
-            ex.responseHeaders.add("Content-Range", "bytes $start-$end/${payload.size}")
-            ex.sendResponseHeaders(206, len.toLong())
-            ex.responseBody.use { it.write(payload, start, len) }
-        } else {
-            ex.responseHeaders.add("Content-Type", ct)
-            ex.responseHeaders.add("Accept-Ranges", "bytes")
-            ex.sendResponseHeaders(200, payload.size.toLong())
-            ex.responseBody.use { it.write(payload) }
+            val slice = payload.copyOfRange(start, end + 1)
+            return MockResponse().setResponseCode(206)
+                .setHeader("Content-Type", ct)
+                .setHeader("Accept-Ranges", "bytes")
+                .setHeader("Content-Range", "bytes $start-$end/${payload.size}")
+                .setBody(Buffer().write(slice))
         }
+        return MockResponse().setResponseCode(200)
+            .setHeader("Content-Type", ct)
+            .setHeader("Accept-Ranges", "bytes")
+            .setBody(Buffer().write(payload))
     }
 
-    private fun baseUrl(): String = "http://127.0.0.1:${upstream.address.port}"
+    private fun baseUrl(): String = upstream.url("/").toString().removeSuffix("/")
 
     @Test
     fun fullGetReturnsExactBytes() {
         val local = proxy.register(baseUrl() + "/file.bin", mapOf("Referer" to "https://x/"))
-        val resp = client.newCall(Request.Builder().url(local).build()).execute()
-        resp.use {
+        client.newCall(Request.Builder().url(local).build()).execute().use {
             assertEquals(200, it.code)
             assertTrue(it.body!!.bytes().contentEquals(data))
             assertEquals("bytes", it.header("Accept-Ranges"))
@@ -81,23 +84,20 @@ class StreamProxyTest {
     @Test
     fun rangeGetReturns206() {
         val local = proxy.register(baseUrl() + "/file.bin", emptyMap())
-        val resp = client.newCall(
-            Request.Builder().url(local).header("Range", "bytes=0-1023").build()
-        ).execute()
-        resp.use {
-            assertEquals(206, it.code)
-            val body = it.body!!.bytes()
-            assertEquals(1024, body.size)
-            assertEquals("bytes 0-1023/4096", it.header("Content-Range"))
-            assertTrue(body.contentEquals(data.copyOfRange(0, 1024)))
-        }
+        client.newCall(Request.Builder().url(local).header("Range", "bytes=0-1023").build())
+            .execute().use {
+                assertEquals(206, it.code)
+                val body = it.body!!.bytes()
+                assertEquals(1024, body.size)
+                assertEquals("bytes 0-1023/4096", it.header("Content-Range"))
+                assertTrue(body.contentEquals(data.copyOfRange(0, 1024)))
+            }
     }
 
     @Test
     fun headReturnsLengthWithoutBody() {
         val local = proxy.register(baseUrl() + "/file.bin", emptyMap())
-        val resp = client.newCall(Request.Builder().url(local).head().build()).execute()
-        resp.use {
+        client.newCall(Request.Builder().url(local).head().build()).execute().use {
             assertEquals(200, it.code)
             assertEquals("4096", it.header("Content-Length"))
         }
@@ -106,26 +106,22 @@ class StreamProxyTest {
     @Test
     fun m3u8IsRewrittenAndSegmentsPlayable() {
         val local = proxy.register(baseUrl() + "/play.m3u8", mapOf("Cookie" to "a=b"))
-        val resp = client.newCall(Request.Builder().url(local).build()).execute()
-        val text = resp.use { it.body!!.string() }
+        val text = client.newCall(Request.Builder().url(local).build()).execute()
+            .use { it.body!!.string() }
         assertTrue(text.contains("/s/"))
         assertTrue(text.contains(".ts"))
-        // 取第一个分片地址，经代理应能拿到字节
         val seg = text.lineSequence().first { it.startsWith("/s/") }
-        val segResp = client.newCall(
-            Request.Builder().url("http://127.0.0.1:${proxy.port}$seg").build()
-        ).execute()
-        segResp.use {
-            assertEquals(200, it.code)
-            assertTrue(it.body!!.bytes().contentEquals(data))
-        }
+        client.newCall(Request.Builder().url("http://127.0.0.1:${proxy.port}$seg").build())
+            .execute().use {
+                assertEquals(200, it.code)
+                assertTrue(it.body!!.bytes().contentEquals(data))
+            }
     }
 
     @Test
     fun unknownTokenReturns410() {
-        val resp = client.newCall(
+        client.newCall(
             Request.Builder().url("http://127.0.0.1:${proxy.port}/s/deadbeef.ts").build()
-        ).execute()
-        resp.use { assertEquals(410, it.code) }
+        ).execute().use { assertEquals(410, it.code) }
     }
 }
