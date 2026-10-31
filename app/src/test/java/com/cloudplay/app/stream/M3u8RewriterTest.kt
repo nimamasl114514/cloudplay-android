@@ -22,10 +22,10 @@ class M3u8RewriterTest {
         val out = M3u8Rewriter.rewrite(src, "https://cdn.example.com/a/play.m3u8") { "/s/" + it.hashCode() }
 
         assertTrue(out.contains("#EXTM3U"))
-        assertTrue(out.contains("seg0.ts"))
-        assertTrue(out.contains("https://cdn.example.com/a/seg1.ts"))
         assertTrue(out.contains("/s/"))
         assertEquals(src.lines().size, out.lines().size)
+        // 原始相对/绝对 URI 都被替换（不再出现原地址）
+        assertEquals(2, Regex("/s/").findAll(out).count())
     }
 
     @Test
