@@ -15,7 +15,7 @@ class Pan115Adapter(credential: Map<String, String> = emptyMap()) : CloudDiskAda
     override val rootId = "0"
 
     private val cookie = credential["cookie"].orEmpty()
-    private val ua = credential["ua"].takeIf { it.isNotBlank() } ?: UA_115
+    private val ua = (credential["ua"] ?: "").ifBlank { UA_115 }
 
     override fun needCredential(): List<String> =
         if (cookie.isBlank()) listOf("cookie") else emptyList()
