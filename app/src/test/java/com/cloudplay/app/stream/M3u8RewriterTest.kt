@@ -1,6 +1,7 @@
 package com.cloudplay.app.stream
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -23,9 +24,11 @@ class M3u8RewriterTest {
 
         assertTrue(out.contains("#EXTM3U"))
         assertTrue(out.contains("/s/"))
-        assertEquals(src.lines().size, out.lines().size)
-        // 原始相对/绝对 URI 都被替换（不再出现原地址）
+        // 两个 URI 都被替换，原地址不再出现
         assertEquals(2, Regex("/s/").findAll(out).count())
+        assertFalse(out.contains("https://cdn.example.com/a/seg1.ts"))
+        assertFalse(out.contains("seg0.ts"))
+        assertEquals(1, Regex("#EXTM3U").findAll(out).count())
     }
 
     @Test
